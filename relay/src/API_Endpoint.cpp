@@ -99,10 +99,12 @@ API_Endpoint::~API_Endpoint() {
 	stop();
 }
 
-bool API_Endpoint::start(const std::filesystem::path &configDirectory, const uint16_t port) {
+bool API_Endpoint::start(const std::filesystem::path &configDirectory, const RelayConfig &config) {
 	if (m_server) {
 		return false;
 	}
+
+	m_config = config;
 
 	const QString configuredHost = qEnvironmentVariable("RELAY_PUBLIC_HOST").trimmed();
 	m_publicHost.clear();
@@ -157,8 +159,8 @@ bool API_Endpoint::start(const std::filesystem::path &configDirectory, const uin
 
 	registerEndpoints();
 
-	if (!m_server->bind_to_port("0.0.0.0", port)) {
-		spdlog::error("Failed to initialize or bind relay API server on port {}", port);
+	if (!m_server->bind_to_port("0.0.0.0", m_config.apiPort)) {
+		spdlog::error("Failed to initialize or bind relay API server on port {}", m_config.apiPort);
 		m_server.reset();
 		return false;
 	}
@@ -172,7 +174,7 @@ bool API_Endpoint::start(const std::filesystem::path &configDirectory, const uin
 	const QString mediaPath = executableDirectory.filePath(QStringLiteral("mediamtx") + executableSuffix);
 	m_goIrlPath = executableDirectory.filePath(QStringLiteral("go-irl") + executableSuffix);
 	const QString mediaConfig = QDir(QFileInfo(m_keyPath).absolutePath()).filePath(QStringLiteral("mediamtx.yml"));
-	m_mediaManager = std::make_unique<MediamtxManager>(mediaPath, mediaConfig);
+	m_mediaManager = std::make_unique<MediamtxManager>(mediaPath, mediaConfig, m_config);
 
 	if (m_publicHost.empty()) {
 		m_publicIpProcess = std::make_unique<QProcess>();
@@ -194,8 +196,10 @@ bool API_Endpoint::start(const std::filesystem::path &configDirectory, const uin
 					m_publicHost = publicHost;
 
 					for (auto &[streamKey, feed] : m_feeds) {
-						feed.link = MediamtxManager::publishLink(
-								    streamKey, feedProtocol(feed.protocol), publicHost)
+						feed.link = m_mediaManager
+								    ->publishLink(streamKey,
+										  feedProtocol(feed.protocol),
+										  publicHost)
 								    .toStdString();
 					}
 				} else {
@@ -279,8 +283,9 @@ StreamProtocol API_Endpoint::feedProtocol(const std::string &protocol) {
 
 void API_Endpoint::startFeed(const std::string &protocol, const std::string &streamKey, const std::string &host) {
 	const StreamProtocol selectedProtocol = feedProtocol(protocol);
-	GoIRL_Process *const goIrl =
-		selectedProtocol == StreamProtocol::SRTLA ? new GoIRL_Process(RELAY_SRTLA_PORT, m_goIrlPath) : nullptr;
+	GoIRL_Process *const goIrl = selectedProtocol == StreamProtocol::SRTLA
+					     ? new GoIRL_Process(m_config.srtlaPort, m_goIrlPath)
+					     : nullptr;
 	FeedContext *const context = new FeedContext(streamKey, selectedProtocol, host, m_mediaManager.get(), goIrl);
 
 	if (goIrl) {
@@ -360,7 +365,7 @@ void API_Endpoint::registerEndpoints() {
 				host = requestHost.host().toStdString();
 			}
 
-			link = MediamtxManager::publishLink(streamKey, feedProtocol(protocol), host).toStdString();
+			link = m_mediaManager->publishLink(streamKey, feedProtocol(protocol), host).toStdString();
 
 			if (m_feeds.contains(streamKey)) {
 				res.status = 409;

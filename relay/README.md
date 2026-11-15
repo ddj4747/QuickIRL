@@ -36,7 +36,7 @@ when an address is discovered. If a later lookup fails, the last discovered
 address is retained.
 
 Optionally set `RELAY_PUBLIC_HOST` to an IP address or domain (without a scheme
-or port) to override discovery. Links use the compiled protocol ports, so Docker
+or port) to override discovery. Links use the configured protocol ports, so Docker
 mappings and any external firewall must allow those ports. If Docker maps a
 different external port, clients must adjust the link. SRTLA uses the returned
 server URL and the stream key separately. The detected outbound address may not
@@ -56,30 +56,39 @@ is included:
 docker build -f relay/Dockerfile -t obs-relay .
 ```
 
-Ports are compiled into the relay. Docker build arguments and CMake cache
-variables use the same names:
+On first startup, the relay creates `relay.yml` in `RELAY_CONFIG_DIR`, or
+beside the executable when that variable is unset. Edit this file and restart
+the relay to change its listening ports. Omitted ports use the defaults below;
+invalid or unknown settings prevent startup. The MediaMTX API listens only on
+localhost. The relay manages `mediamtx.yml` separately; do not edit that file.
 
-| Variable | Default |
-| --- | ---: |
-| `RELAY_API_PORT` | 8080 |
-| `RELAY_SRTLA_PORT` | 5000 |
-| `RELAY_SRT_PORT` | 8890 |
-| `RELAY_RTSP_PORT` | 8554 |
-| `RELAY_RTP_PORT` | 8000 |
-| `RELAY_RTCP_PORT` | 8001 |
-| `RELAY_RTMP_PORT` | 1935 |
-| `RELAY_WEBRTC_PORT` | 8889 |
-| `RELAY_MOQ_PORT` | 8892 |
-| `RELAY_MOQ_QUIC_PORT` | 8893 |
+```yaml
+ports:
+  api: 8080
+  srtla: 5000
+  srt: 8890
+  rtsp: 8554
+  rtp: 8000
+  rtcp: 8001
+  rtmp: 1935
+  webrtc: 8889
+  moq: 8892
+  moq_quic: 8893
+  media_api: 9997
+```
 
-For example, `docker build -f relay/Dockerfile --build-arg RELAY_API_PORT=8081
--t obs-relay .` builds an image with API port 8081. For a non-Docker build,
-pass `-DRELAY_API_PORT=8081` to CMake. Changing an internal port requires a
-rebuild; a pre-existing `relay-config.json` is no longer read.
+All ports must be integers between 1 and 65535. The relay uses the configured
+ports in publish links. Make sure the chosen ports are available and that
+Docker port mappings and firewall rules match. In Docker, mount a persistent
+directory at `/var/lib/relay` to edit and retain `relay.yml`, certificates,
+and the API key. For example, after creating that directory and its config:
 
-`EXPOSE` documents the image's internal ports but does not publish them. For
-example, run `docker run -p 8081:8081 obs-relay` for an image built with API
-port 8081. Choose the host and container ports separately when publishing.
+```sh
+docker run -v /path/to/relay-data:/var/lib/relay -p 8081:8081 obs-relay
+```
+
+Set `ports.api: 8081` in the mounted file for this example. The image's
+`EXPOSE` metadata lists the default ports and does not publish them.
 
 `FeedContext` wraps one feed's protocol, stream key, address, and asynchronous
 start/stop lifecycle. It uses a shared MediaMTX manager for supported media

@@ -341,6 +341,10 @@ def create_macos_universal_libraries():
     x86_qr = conan_package_folder(x86_generators, "qr-code-generator")
     lipo_static_libraries("qr-code-generator", arm_qr, x86_qr, universal_lib_dir)
 
+    arm_yaml = conan_package_folder(arm_generators, "yaml-cpp")
+    x86_yaml = conan_package_folder(x86_generators, "yaml-cpp")
+    lipo_static_libraries("yaml-cpp", arm_yaml, x86_yaml, universal_lib_dir)
+
 
 shutil.rmtree("build", ignore_errors=True)
 

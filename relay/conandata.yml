@@ -1,5 +1,6 @@
 requirements:
   common:
     - "spdlog/1.16.0"
+    - "yaml-cpp/0.8.0"
     - "cpp-httplib/0.61.0"
     - "openssl/4.0.3"

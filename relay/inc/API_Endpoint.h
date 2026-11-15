@@ -14,6 +14,7 @@
 #include <utility>
 #include <QString>
 #include <FeedContext.h>
+#include <RelayConfig.h>
 #include <QProcess>
 #include <QTimer>
 
@@ -27,7 +28,7 @@ public:
 	static bool postToEventLoop(std::function<void()> operation);
 	static bool prepareAccessKey(const QString &configDirectory, bool regenerate, QString &key, QString &error,
 				     bool &generated);
-	bool start(const std::filesystem::path &configDirectory, uint16_t port);
+	bool start(const std::filesystem::path &configDirectory, const RelayConfig &config);
 	void stop();
 
 private:
@@ -57,6 +58,7 @@ private:
 
 	std::unique_ptr<MediamtxManager> m_mediaManager;
 	QString m_goIrlPath;
+	RelayConfig m_config;
 	std::map<std::string, FeedContext *> m_contexts;
 	std::mutex m_feedsMutex;
 	std::map<std::string, FeedInfo> m_feeds;
