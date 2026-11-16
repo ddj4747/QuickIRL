@@ -69,6 +69,7 @@ private:
 	NO_DISCARD uint32_t height() const;
 
 	static bool readSettings(obs_data_t *settings, PluginSource *source);
+	static bool isPullProtocol(const char *protocol);
 	static std::string generateStreamId();
 
 	void startReceiver();
@@ -115,8 +116,10 @@ private:
 	void copySettingToClipboard(const char *key) const;
 	static bool onCopyStreamIdClicked(obs_properties_t *props, obs_property_t *property, void *data);
 	static bool onCopyStreamUrlClicked(obs_properties_t *props, obs_property_t *property, void *data);
-	static bool updatePullProperties(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings);
-	static void attachAppQrCodes(const QString &larixLink, const QString &moblinLink, const QString &irlProLink, bool show);
+	static bool updatePullProperties(void *data, obs_properties_t *props, obs_property_t *property,
+					 obs_data_t *settings);
+	static void attachAppQrCodes(const QString &larixLink, const QString &moblinLink, const QString &irlProLink,
+				     bool show);
 	void scheduleAppQrCodes(bool show) const;
 
 	obs_source_t *m_source = nullptr;

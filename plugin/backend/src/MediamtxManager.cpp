@@ -159,19 +159,20 @@ bool MediamtxManager::supportedPullUrl(const QString &value) {
 	static const QStringList schemes = {"rtsp", "rtsps", "rtsp+http",  "rtsps+http", "rtsp+ws", "rtsps+ws",
 					    "rtmp", "rtmps", "http",       "https",      "srt",     "moqt",
 					    "whep", "wheps", "udp+mpegts", "udp+rtp"};
+
 	return url.isValid() && !url.host().isEmpty() && schemes.contains(scheme);
 }
 
 void MediamtxManager::addInput(const std::string &streamId, const StreamProtocol protocol, const std::string &ip) {
 	const QString qname = obs_helpers::fromStdString(streamId);
 	if (!running()) {
-		m_pendingInputs.push_back({"", streamId, protocol, ip});
+		m_pendingInputs.push_back({streamId, protocol, ip});
 		startServer();
 		return;
 	}
 
 	if (!ready()) {
-		m_pendingInputs.push_back({"", streamId, protocol, ip});
+		m_pendingInputs.push_back({streamId, protocol, ip});
 		return;
 	}
 
@@ -201,13 +202,16 @@ void MediamtxManager::addInputWhenReady(const std::string &streamId, const Strea
 	QString publishUrl;
 	const QString mediaPath = pathName(streamId, protocol);
 	const QString encodedPathName = QString::fromLatin1(QUrl::toPercentEncoding(mediaPath));
+
 	if (protocol == StreamProtocol::Pull) {
 		obs_log(LOG_INFO, "Adding MediaMTX pull path '%s'", qUtf8Printable(qname));
 		publishUrl = obs_helpers::fromStdString(ip);
+
 		if (!supportedPullUrl(publishUrl)) {
 			emit inputError(qname, QStringLiteral("Unsupported or invalid pull URL"));
 			return;
 		}
+
 		body["sourceOnDemand"] = false;
 	} else {
 		QHostAddress address;

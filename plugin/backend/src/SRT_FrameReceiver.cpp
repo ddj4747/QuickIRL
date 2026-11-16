@@ -312,9 +312,7 @@ SRT_FrameReceiver::SRT_FrameReceiver(const uint16_t port, std::string streamID,
 				     std::map<AVCodecID, const AVCodec *> codecs)
 	: m_streamID(std::move(streamID)),
 	  m_codecs(std::move(codecs)),
-	  m_port(port) {
-	obs_log(LOG_INFO, "Stream: %s", std::format("{}, {}", streamID, port).c_str());
-}
+	  m_port(port) {}
 
 SRT_FrameReceiver::~SRT_FrameReceiver() {
 	disconnectReceiver();

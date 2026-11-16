@@ -33,19 +33,19 @@ std::mutex PluginSource::s_instancesMutex;
 std::set<PluginSource *> PluginSource::s_instances;
 std::atomic<bool> PluginSource::s_shutdownPrepared = false;
 
-namespace {
-bool isPullProtocol(const char *protocol) {
+bool PluginSource::isPullProtocol(const char *protocol) {
 	return QString::fromUtf8(protocol) == QStringLiteral("Pull");
-}
-
 }
 
 bool PluginSource::updatePullProperties(void *data, obs_properties_t *props, obs_property_t *, obs_data_t *settings) {
 	const bool pull = isPullProtocol(obs_data_get_string(settings, "Protocol"));
+	const bool invalid =
+		!MediamtxManager::supportedPullUrl(QString::fromUtf8(obs_data_get_string(settings, "StreamUrl")));
+
 	obs_property_set_enabled(obs_properties_get(props, "StreamUrl"), pull);
-	const bool invalid = !MediamtxManager::supportedPullUrl(QString::fromUtf8(obs_data_get_string(settings, "StreamUrl")));
 	obs_property_set_visible(obs_properties_get(props, "PullUrlRequired"), pull && invalid);
 	static_cast<PluginSource *>(data)->scheduleAppQrCodes(!pull);
+
 	return true;
 }
 
@@ -226,7 +226,8 @@ bool PluginSource::readSettings(obs_data_t *settings, PluginSource *source) {
 		obs_log(LOG_ERROR, "Invalid protocol %s", protocolString);
 		return false;
 	}
-	if (isPullProtocol(protocolString) &&
+
+	if (protocolOpt.value() == StreamProtocol::Pull &&
 	    !MediamtxManager::supportedPullUrl(QString::fromUtf8(obs_data_get_string(settings, "StreamUrl")))) {
 		obs_log(LOG_ERROR, "Enter a valid supported stream URL");
 		return false;
@@ -267,7 +268,7 @@ bool PluginSource::readSettings(obs_data_t *settings, PluginSource *source) {
 
 	source->m_protocol = protocolOpt.value();
 	source->m_streamId = streamId;
-	if (isPullProtocol(protocolString)) {
+	if (protocolOpt.value() == StreamProtocol::Pull) {
 		source->m_streamUrl = obs_data_get_string(settings, "StreamUrl");
 	}
 	source->m_selectedCodecs = std::move(selectedCodecs);
@@ -336,7 +337,7 @@ bool PluginSource::onCopyStreamUrlClicked(obs_properties_t *, obs_property_t *, 
 }
 
 void PluginSource::attachAppQrCodes(const QString &larixLink, const QString &moblinLink, const QString &irlProLink,
-				    bool show) {
+				    const bool show) {
 	const QLabel *streamUrlLabel = nullptr;
 	for (QWidget *top : QApplication::topLevelWidgets()) {
 		for (const QLabel *label : top->findChildren<QLabel *>()) {
@@ -392,14 +393,16 @@ void PluginSource::attachAppQrCodes(const QString &larixLink, const QString &mob
 		return;
 	}
 
-	auto *rowWidget = dynamic_cast<AppQrRow *>(
+	AppQrRow *rowWidget = dynamic_cast<AppQrRow *>(
 		container->findChild<QWidget *>(QLatin1String("pluginSourceQrRow"), Qt::FindDirectChildrenOnly));
+
 	if (!show) {
 		if (rowWidget) {
 			rowWidget->hide();
 		}
 		return;
 	}
+
 	if (!rowWidget) {
 		rowWidget = new AppQrRow(container);
 		const int insertAt = std::min(streamUrlRow + 2, layout->rowCount());
@@ -410,12 +413,14 @@ void PluginSource::attachAppQrCodes(const QString &larixLink, const QString &mob
 	rowWidget->show();
 }
 
-void PluginSource::scheduleAppQrCodes(bool show) const {
+void PluginSource::scheduleAppQrCodes(const bool show) const {
 	const QString larix = larixLink();
 	const QString moblin = moblinLink();
 	const QString irlPro = irlProLink();
-	QTimer::singleShot(0, QCoreApplication::instance(),
-			   [larix, moblin, irlPro, show]() { PluginSource::attachAppQrCodes(larix, moblin, irlPro, show); });
+
+	QTimer::singleShot(0, QCoreApplication::instance(), [larix, moblin, irlPro, show]() {
+		PluginSource::attachAppQrCodes(larix, moblin, irlPro, show);
+	});
 }
 
 void PluginSource::startReceiver() {
@@ -423,29 +428,36 @@ void PluginSource::startReceiver() {
 		return;
 	}
 
-	if (!isPullProtocol(magic_enum::enum_name(m_protocol).data())) {
+	if (m_protocol != StreamProtocol::Pull) {
 		m_streamUrl.clear();
 	}
 
 	if (m_protocol == StreamProtocol::Pull) {
 		m_running = true;
 		obs_log(LOG_INFO, "Starting pull source '%s'", m_streamId.c_str());
-		QObject *app = QCoreApplication::instance();
+
+		QObject *const app = QCoreApplication::instance();
 		if (app && app->thread() != QThread::currentThread()) {
-			obs_weak_source_t *weakSource = obs_source_get_weak_source(m_source);
-			QMetaObject::invokeMethod(app, [weakSource]() {
-				obs_source_t *obsSource = obs_weak_source_get_source(weakSource);
-				obs_weak_source_release(weakSource);
-				if (!obsSource) {
-					return;
-				}
-				PluginSource *source = fromSource(obsSource);
-				if (source && source->m_running && source->m_protocol == StreamProtocol::Pull &&
-				    !source->m_streamHandler) {
-					source->startStreamHandler();
-				}
-				obs_source_release(obsSource);
-			}, Qt::QueuedConnection);
+			obs_weak_source_t *const weakSource = obs_source_get_weak_source(m_source);
+			QMetaObject::invokeMethod(
+				app,
+				[weakSource]() {
+					obs_source_t *const obsSource = obs_weak_source_get_source(weakSource);
+					obs_weak_source_release(weakSource);
+
+					if (!obsSource) {
+						return;
+					}
+
+					PluginSource *const source = fromSource(obsSource);
+					if (source && source->m_running && source->m_protocol == StreamProtocol::Pull &&
+					    !source->m_streamHandler) {
+						source->startStreamHandler();
+					}
+
+					obs_source_release(obsSource);
+				},
+				Qt::QueuedConnection);
 		} else {
 			startStreamHandler();
 		}
@@ -495,8 +507,8 @@ void PluginSource::onPortForwardFinished(const PortForwarder *portForwarder, con
 
 void PluginSource::startStreamHandler() {
 	const std::optional<std::string> publicAddressOpt = m_protocol == StreamProtocol::Pull
-							 ? std::optional<std::string>(m_streamUrl)
-							 : m_portForwarders.front()->publicAddress();
+								    ? std::optional<std::string>(m_streamUrl)
+								    : m_portForwarders.front()->publicAddress();
 	if (!publicAddressOpt.has_value()) {
 		stopReceiver();
 		return;
@@ -748,11 +760,14 @@ obs_properties_t *PluginSource::OnGetProperties(void *data) {
 	obs_properties_add_button2(props, "CopyStreamId", "Copy", &PluginSource::onCopyStreamIdClicked, source);
 
 	obs_property_t *streamUrl = obs_properties_add_text(props, "StreamUrl", "Stream URL", OBS_TEXT_DEFAULT);
-	obs_property_set_enabled(streamUrl, isPullProtocol(magic_enum::enum_name(source->m_protocol).data()));
+	obs_property_set_enabled(streamUrl, source->m_protocol == StreamProtocol::Pull);
 	obs_properties_add_button2(props, "CopyStreamUrl", "Copy", &PluginSource::onCopyStreamUrlClicked, source);
-	obs_property_t *urlRequired = obs_properties_add_text(props, "PullUrlRequired", "Enter a valid supported stream URL", OBS_TEXT_INFO);
-	obs_property_set_visible(urlRequired, isPullProtocol(magic_enum::enum_name(source->m_protocol).data()) &&
-				       !MediamtxManager::supportedPullUrl(QString::fromStdString(source->m_streamUrl)));
+
+	obs_property_t *const urlRequired =
+		obs_properties_add_text(props, "PullUrlRequired", "Enter a valid supported stream URL", OBS_TEXT_INFO);
+	obs_property_set_visible(
+		urlRequired, source->m_protocol == StreamProtocol::Pull &&
+				     !MediamtxManager::supportedPullUrl(QString::fromStdString(source->m_streamUrl)));
 	obs_property_set_modified_callback2(protocolList, updatePullProperties, source);
 	obs_property_set_modified_callback2(streamUrl, updatePullProperties, source);
 
@@ -820,19 +835,20 @@ void PluginSource::OnUpdate(void *data, obs_data_t *settings) {
 	const StreamProtocol previousProtocol = source->m_protocol;
 	const std::string previousStreamId = source->m_streamId;
 	const std::string previousUrl = source->m_streamUrl;
-	const auto previousCodecs = source->m_selectedCodecs;
+	const std::map<AVCodecID, const AVCodec *> previousCodecs = source->m_selectedCodecs;
 
 	if (!readSettings(settings, source)) {
 		obs_data_set_string(settings, "Protocol", magic_enum::enum_name(previousProtocol).data());
 		obs_data_set_string(settings, "StreamUrl", previousUrl.c_str());
 		return;
 	}
-	const std::string newUrl = isPullProtocol(magic_enum::enum_name(source->m_protocol).data())
-					   ? obs_data_get_string(settings, "StreamUrl") : "";
+
+	const std::string newUrl =
+		source->m_protocol == StreamProtocol::Pull ? obs_data_get_string(settings, "StreamUrl") : "";
 
 	if (source->m_protocol == previousProtocol && source->m_streamId == previousStreamId &&
 	    source->m_selectedCodecs == previousCodecs &&
-	    (!isPullProtocol(magic_enum::enum_name(source->m_protocol).data()) || newUrl == previousUrl)) {
+	    (source->m_protocol != StreamProtocol::Pull || newUrl == previousUrl)) {
 		return;
 	}
 

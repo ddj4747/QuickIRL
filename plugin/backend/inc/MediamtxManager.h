@@ -52,7 +52,6 @@ signals:
 
 private:
 	struct PendingInput {
-		std::string url{};
 		std::string streamId{};
 		StreamProtocol protocol{};
 		std::string ip{};
