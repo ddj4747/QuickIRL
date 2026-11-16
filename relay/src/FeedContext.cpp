@@ -72,7 +72,7 @@ FeedContext::FeedContext(std::string streamKey, const StreamProtocol protocol, s
 	if (m_goIrl && m_protocol == StreamProtocol::SRTLA) {
 		connect(m_goIrl, &GoIRL_Process::serverStarted, this, [this] {
 			if (m_state == State::Starting) {
-				m_link = MediamtxManager::publishLink(m_streamKey, m_protocol, m_address);
+				m_link = m_mediaManager->publishLink(m_streamKey, m_protocol, m_address);
 				m_state = State::Running;
 				emit started(m_link);
 			}
