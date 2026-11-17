@@ -46,9 +46,9 @@ bool API_Endpoint::readAccessKey(const QString &path, QString &key, QString &err
 }
 
 bool API_Endpoint::prepareAccessKey(const QString &configDirectory, const bool regenerate, QString &key, QString &error,
-				    bool &generated) {
+				    bool &generated, const QString &fileName) {
 	generated = false;
-	const QString path = QDir(configDirectory).filePath(QStringLiteral("api-key"));
+	const QString path = QDir(configDirectory).filePath(fileName);
 
 	if (!regenerate && QFile::exists(path)) {
 		return readAccessKey(path, key, error);
@@ -139,6 +139,8 @@ bool API_Endpoint::start(const std::filesystem::path &configDirectory, const Rel
 	m_keyPath = QDir(QString::fromStdString(configDirectory.string())).filePath(QStringLiteral("api-key"));
 #endif
 
+	m_obsKeyPath = QFileInfo(m_keyPath).dir().filePath(QStringLiteral("obs-key"));
+
 	const std::filesystem::path keyPath = configDirectory / "key.pem";
 	const std::filesystem::path certPath = configDirectory / "cert.pem";
 
@@ -161,6 +163,18 @@ bool API_Endpoint::start(const std::filesystem::path &configDirectory, const Rel
 
 	if (!m_server->bind_to_port("0.0.0.0", m_config.apiPort)) {
 		spdlog::error("Failed to initialize or bind relay API server on port {}", m_config.apiPort);
+		m_server.reset();
+		return false;
+	}
+
+	m_obsControl = std::make_unique<ObsControlRelay>();
+
+	if (!m_obsControl->start(certPath, keyPath, m_config.obsControlPort,
+				 [this](const httplib::Request &request, httplib::Response &response, const bool obs) {
+					 return authorizeKey(request, response, obs ? m_obsKeyPath : m_keyPath);
+				 })) {
+		m_obsControl.reset();
+		m_server->stop();
 		m_server.reset();
 		return false;
 	}
@@ -391,6 +405,49 @@ void API_Endpoint::registerEndpoints() {
 		res.status = 202;
 	});
 
+	m_server->Get("/obs-control", [this](const httplib::Request &req, httplib::Response &res) {
+		if (!authorize(req, res)) {
+			return;
+		}
+
+		std::string host;
+
+		{
+			const std::lock_guard<std::mutex> lock(m_feedsMutex);
+			host = m_publicHost;
+		}
+
+		if (host.empty()) {
+			const QUrl requestHost(QStringLiteral("https://") +
+					       QString::fromStdString(req.get_header_value("Host")));
+
+			if (!requestHost.isValid() || requestHost.host().isEmpty() ||
+			    !requestHost.userInfo().isEmpty() || !requestHost.path().isEmpty() ||
+			    requestHost.hasQuery() || requestHost.hasFragment()) {
+				res.status = 400;
+				return;
+			}
+
+			host = requestHost.host().toStdString();
+		}
+
+		QUrl address;
+		address.setScheme(QStringLiteral("https"));
+		address.setHost(QString::fromStdString(host));
+		address.setPort(m_config.obsControlPort);
+
+		QUrl websocket(address);
+		websocket.setScheme(QStringLiteral("wss"));
+		websocket.setPath(QStringLiteral("/_relay/obs"));
+
+		QJsonObject response;
+		response.insert(QStringLiteral("address"), address.toString(QUrl::FullyEncoded));
+		response.insert(QStringLiteral("websocket"), websocket.toString(QUrl::FullyEncoded));
+		res.set_content(QJsonDocument(response).toJson(QJsonDocument::Compact).toStdString(),
+				"application/json");
+		res.status = 200;
+	});
+
 	m_server->Get("/status", [this](const httplib::Request &req, httplib::Response &res) {
 		if (!authorize(req, res)) {
 			return;
@@ -472,10 +529,14 @@ void API_Endpoint::registerEndpoints() {
 }
 
 bool API_Endpoint::authorize(const httplib::Request &req, httplib::Response &res) const {
+	return authorizeKey(req, res, m_keyPath);
+}
+
+bool API_Endpoint::authorizeKey(const httplib::Request &req, httplib::Response &res, const QString &path) {
 	QString key;
 	QString error;
 
-	if (!readAccessKey(m_keyPath, key, error)) {
+	if (!readAccessKey(path, key, error)) {
 		spdlog::error("Failed to read relay API key: {}", error.toStdString());
 		res.status = 503;
 		return false;
@@ -494,6 +555,11 @@ bool API_Endpoint::authorize(const httplib::Request &req, httplib::Response &res
 }
 
 void API_Endpoint::stop() {
+	if (m_obsControl) {
+		m_obsControl->stop();
+		m_obsControl.reset();
+	}
+
 	if (m_server) {
 		m_server->stop();
 	}

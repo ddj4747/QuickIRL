@@ -15,6 +15,7 @@
 #include <QString>
 #include <FeedContext.h>
 #include <RelayConfig.h>
+#include <ObsControlRelay.h>
 #include <QProcess>
 #include <QTimer>
 
@@ -27,7 +28,7 @@ public:
 	static API_Endpoint &getInstance();
 	static bool postToEventLoop(std::function<void()> operation);
 	static bool prepareAccessKey(const QString &configDirectory, bool regenerate, QString &key, QString &error,
-				     bool &generated);
+				     bool &generated, const QString &fileName = QStringLiteral("api-key"));
 	bool start(const std::filesystem::path &configDirectory, const RelayConfig &config);
 	void stop();
 
@@ -41,10 +42,13 @@ private:
 	void refreshPublicIp();
 	void registerEndpoints();
 	bool authorize(const httplib::Request &req, httplib::Response &res) const;
+	static bool authorizeKey(const httplib::Request &req, httplib::Response &res, const QString &path);
 
 	std::unique_ptr<httplib::SSLServer> m_server;
 	std::thread m_httpThread;
 	QString m_keyPath;
+	QString m_obsKeyPath;
+	std::unique_ptr<ObsControlRelay> m_obsControl;
 	std::string m_publicHost;
 	std::unique_ptr<QProcess> m_publicIpProcess;
 	std::unique_ptr<QTimer> m_publicIpTimer;

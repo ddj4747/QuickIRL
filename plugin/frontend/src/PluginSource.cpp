@@ -175,13 +175,13 @@ std::vector<std::string> PluginSource::sourceNames() {
 		}
 	}
 
-	std::sort(names.begin(), names.end());
+	std::ranges::sort(names);
 	return names;
 }
 
 std::optional<uint64_t> PluginSource::bitrateForName(const std::string &name) {
 	std::lock_guard<std::mutex> lock(s_instancesMutex);
-	for (PluginSource *source : s_instances) {
+	for (const PluginSource *source : s_instances) {
 		const char *sourceName = obs_source_get_name(source->m_source);
 		if (sourceName && name == sourceName) {
 			return source->getBitrate();
@@ -193,7 +193,7 @@ std::optional<uint64_t> PluginSource::bitrateForName(const std::string &name) {
 
 std::optional<PluginSource::StreamStats> PluginSource::statsForName(const std::string &name) {
 	std::lock_guard<std::mutex> lock(s_instancesMutex);
-	for (PluginSource *source : s_instances) {
+	for (const PluginSource *source : s_instances) {
 		const char *sourceName = obs_source_get_name(source->m_source);
 		if (!sourceName || name != sourceName) {
 			continue;
@@ -283,7 +283,7 @@ std::string PluginSource::generateStreamId() {
 	return uuidStr.substr(1, uuidStr.size() - 2);
 }
 
-std::vector<PluginSource::ForwardingConfig> PluginSource::forwardingConfigs() {
+std::vector<PluginSource::ForwardingConfig> PluginSource::forwardingConfigs() const {
 	switch (m_protocol) {
 	case StreamProtocol::SRTLA:
 		return {{c_srtlaPort, PortForwarder::Protocol::UDP}};
@@ -465,14 +465,24 @@ void PluginSource::startReceiver() {
 	}
 
 	const std::vector<ForwardingConfig> configs = forwardingConfigs();
-	if (configs.empty() || std::any_of(configs.begin(), configs.end(),
-					   [](const ForwardingConfig &config) { return config.port == 0; })) {
+	if (configs.empty() ||
+	    std::ranges::any_of(configs, [](const ForwardingConfig &config) { return config.port == 0; })) {
 		obs_log(LOG_ERROR, "failed to allocate a listener port");
 		return;
 	}
 
 	m_portForwarders.reserve(configs.size());
-	for (const ForwardingConfig &config : configs) {
+	const auto &[port, protocol] = configs.front();
+	m_portForwarders.push_back(new PortForwarder(port, protocol));
+	PortForwarder::waitForInitialAvailabilityCheck();
+	if (!PortForwarder::isForwardingPossible()) {
+		obs_log(LOG_WARNING, "UPnP is unavailable; the stream receiver cannot be forwarded.");
+		destroyPortForwarder();
+		return;
+	}
+
+	for (size_t i = 1; i < configs.size(); ++i) {
+		const ForwardingConfig &config = configs[i];
 		m_portForwarders.push_back(new PortForwarder(config.port, config.protocol));
 	}
 
@@ -492,11 +502,10 @@ void PluginSource::startReceiver() {
 }
 
 void PluginSource::onPortForwardFinished(const PortForwarder *portForwarder, const bool success) {
-	if (!m_running ||
-	    std::find(m_portForwarders.begin(), m_portForwarders.end(), portForwarder) == m_portForwarders.end()) {
+	if (!m_running || std::ranges::find(m_portForwarders, portForwarder) == m_portForwarders.end()) {
 		return;
 	}
-	if (!success || m_pendingPortForwards == 0) {
+	if (!success || !PortForwarder::isForwardingPossible() || m_pendingPortForwards == 0) {
 		stopReceiver();
 		return;
 	}
@@ -506,6 +515,11 @@ void PluginSource::onPortForwardFinished(const PortForwarder *portForwarder, con
 }
 
 void PluginSource::startStreamHandler() {
+	if (m_protocol != StreamProtocol::Pull && !PortForwarder::isForwardingPossible()) {
+		stopReceiver();
+		return;
+	}
+
 	const std::optional<std::string> publicAddressOpt = m_protocol == StreamProtocol::Pull
 								    ? std::optional<std::string>(m_streamUrl)
 								    : m_portForwarders.front()->publicAddress();

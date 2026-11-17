@@ -111,7 +111,7 @@ private:
 	static constexpr int c_larixSrtLatencyMs = 2000;
 	static constexpr const char *c_qrNamePrefix = "pluginSourceQr";
 
-	NO_DISCARD std::vector<ForwardingConfig> forwardingConfigs();
+	NO_DISCARD std::vector<ForwardingConfig> forwardingConfigs() const;
 	static void deleteOnOwningThread(QObject *object);
 	void copySettingToClipboard(const char *key) const;
 	static bool onCopyStreamIdClicked(obs_properties_t *props, obs_property_t *property, void *data);
