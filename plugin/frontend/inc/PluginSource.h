@@ -30,6 +30,7 @@ public:
 	static PluginSource *fromSource(obs_source_t *source);
 	static const char *id();
 	static void prepareForShutdown();
+	static void refreshConnections();
 	static std::vector<std::pair<std::string, uint64_t>> getBitrates();
 	static std::vector<std::string> sourceNames();
 
@@ -87,6 +88,8 @@ private:
 	void onStreamUnavailable(const QString &streamId);
 	void onStreamStopped(const QString &streamId);
 	void onStreamError(const QString &streamId, const QString &error);
+	void setConnectionError(const QString &error);
+	void clearGeneratedStreamUrl();
 	void updateProperties() const;
 	NO_DISCARD QString larixLink() const;
 	NO_DISCARD QString irlProLink() const;
@@ -101,6 +104,8 @@ private:
 	void copySettingToClipboard(const char *key) const;
 	static bool onCopyStreamIdClicked(obs_properties_t *props, obs_property_t *property, void *data);
 	static bool onCopyStreamUrlClicked(obs_properties_t *props, obs_property_t *property, void *data);
+	static bool onOpenConnectionSettingsClicked(obs_properties_t *props, obs_property_t *property, void *data);
+	static bool onRetryConnectionClicked(obs_properties_t *props, obs_property_t *property, void *data);
 	static bool updatePullProperties(void *data, obs_properties_t *props, obs_property_t *property,
 					 obs_data_t *settings);
 	static void attachAppQrCodes(const QString &larixLink, const QString &moblinLink, const QString &irlProLink,
@@ -115,6 +120,8 @@ private:
 	bool m_running{false};
 	std::string m_streamId;
 	std::string m_streamUrl;
+	QString m_connectionError;
+	mutable std::mutex m_connectionErrorMutex;
 	StreamProtocol m_protocol{};
 
 	ConnectionHandler *m_connectionHandler{nullptr};

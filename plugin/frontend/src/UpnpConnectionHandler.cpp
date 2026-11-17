@@ -62,8 +62,10 @@ void UpnpConnectionHandler::start(const std::string &streamId, const StreamProto
 
 			if (!success || !PortForwarder::isForwardingPossible()) {
 				m_pending = 0;
-				emit streamError(QString::fromStdString(m_streamId),
-						 QStringLiteral("UPnP forwarding failed"));
+				emit streamError(
+					QString::fromStdString(m_streamId),
+					QStringLiteral(
+						"UPnP port forwarding failed. Enable UPnP on your router or configure a relay server in the plugin connection settings."));
 
 				return;
 			}
@@ -83,7 +85,10 @@ void UpnpConnectionHandler::startStream() {
 	const std::optional<std::string> address = m_forwarders.front()->publicAddress();
 
 	if (!address) {
-		emit streamError(QString::fromStdString(m_streamId), QStringLiteral("Public address unavailable"));
+		emit streamError(
+			QString::fromStdString(m_streamId),
+			QStringLiteral(
+				"The router did not provide a public address. Check UPnP or configure a relay server in the plugin connection settings."));
 
 		return;
 	}

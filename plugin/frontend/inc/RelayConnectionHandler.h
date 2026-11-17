@@ -16,10 +16,13 @@ public:
 	uint16_t localSrtPort() const override;
 
 private:
+	void sendStartRequest();
 	QNetworkAccessManager *m_network{nullptr};
 	QNetworkReply *m_startReply{nullptr};
 	QUrl m_feedUrl;
 	QByteArray m_apiKey;
 	QByteArray m_requestBody;
+	std::string m_streamId;
+	int m_startAttempts{0};
 	bool m_feedCreated{false};
 };

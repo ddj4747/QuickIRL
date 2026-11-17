@@ -7,7 +7,9 @@
 #include <QNetworkReply>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QTimer>
 #include <magic_enum/magic_enum.hpp>
+#include <chrono>
 
 RelayConnectionHandler::~RelayConnectionHandler() {
 	stop();
@@ -20,7 +22,8 @@ void RelayConnectionHandler::start(const std::string &streamId, const StreamProt
 	obs_data_release(settings);
 
 	if (relayAddress.isEmpty()) {
-		emit streamError(QString::fromStdString(streamId), QStringLiteral("Relay server URL is empty"));
+		emit streamError(QString::fromStdString(streamId),
+				 QStringLiteral("Enter a relay server URL in the plugin connection settings."));
 
 		return;
 	}
@@ -35,14 +38,17 @@ void RelayConnectionHandler::start(const std::string &streamId, const StreamProt
 	    (scheme.compare(QStringLiteral("https"), Qt::CaseInsensitive) != 0 &&
 	     scheme.compare(QStringLiteral("http"), Qt::CaseInsensitive) != 0) ||
 	    urlInput.host().isEmpty()) {
-		emit streamError(QString::fromStdString(streamId),
-				 QStringLiteral("Relay server URL must be a valid HTTP or HTTPS URL"));
+		emit streamError(
+			QString::fromStdString(streamId),
+			QStringLiteral(
+				"Enter a valid HTTP or HTTPS relay server URL in the plugin connection settings."));
 
 		return;
 	}
 
 	if (m_apiKey.isEmpty()) {
-		emit streamError(QString::fromStdString(streamId), QStringLiteral("Relay API key is empty"));
+		emit streamError(QString::fromStdString(streamId),
+				 QStringLiteral("Enter the relay server API key in the plugin connection settings."));
 
 		return;
 	}
@@ -57,6 +63,13 @@ void RelayConnectionHandler::start(const std::string &streamId, const StreamProt
 	m_requestBody = QJsonDocument(body).toJson(QJsonDocument::Compact);
 
 	m_network = new QNetworkAccessManager(this);
+	m_streamId = streamId;
+	m_startAttempts = 0;
+	sendStartRequest();
+}
+
+void RelayConnectionHandler::sendStartRequest() {
+	++m_startAttempts;
 	QNetworkRequest request(m_feedUrl);
 	request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 	request.setRawHeader("Authorization", m_apiKey);
@@ -69,57 +82,76 @@ void RelayConnectionHandler::start(const std::string &streamId, const StreamProt
 	const QUrl feedUrl = m_feedUrl;
 	const QByteArray apiKey = m_apiKey;
 	const QByteArray requestBody = m_requestBody;
+	const std::string streamId = m_streamId;
 	const QPointer<RelayConnectionHandler> self(this);
 
-	connect(reply, &QNetworkReply::finished, network,
-		[self, reply, network, feedUrl, apiKey, requestBody, streamId]() {
-			const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-			const QByteArray response = reply->readAll();
-			const QString error = reply->errorString();
-			reply->deleteLater();
+	connect(reply, &QNetworkReply::finished, network, [self, reply, network, feedUrl, apiKey, requestBody, streamId]() {
+		const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+		const QByteArray response = reply->readAll();
+		const QString error = reply->errorString();
+		reply->deleteLater();
 
-			if (!self || self->m_startReply != reply) {
-				if (status == 202) {
-					QNetworkRequest request(feedUrl);
-					request.setHeader(QNetworkRequest::ContentTypeHeader,
-							  QStringLiteral("application/json"));
-					request.setRawHeader("Authorization", apiKey);
-					request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-							     QNetworkRequest::ManualRedirectPolicy);
-					request.setTransferTimeout(10000);
-					QNetworkReply *const deletion =
-						network->sendCustomRequest(request, "DELETE", requestBody);
-					connect(deletion, &QNetworkReply::finished, network, &QObject::deleteLater);
-				} else {
-					network->deleteLater();
-				}
+		if (!self || self->m_startReply != reply) {
+			if (status == 202) {
+				QNetworkRequest request(feedUrl);
+				request.setHeader(QNetworkRequest::ContentTypeHeader,
+						  QStringLiteral("application/json"));
+				request.setRawHeader("Authorization", apiKey);
+				request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+						     QNetworkRequest::ManualRedirectPolicy);
+				request.setTransferTimeout(10000);
+				QNetworkReply *const deletion =
+					network->sendCustomRequest(request, "DELETE", requestBody);
+				connect(deletion, &QNetworkReply::finished, network, &QObject::deleteLater);
+			} else {
+				network->deleteLater();
+			}
+
+			return;
+		}
+
+		self->m_startReply = nullptr;
+
+		if (status != 202) {
+			if (status == 409 && self->m_startAttempts < 20) {
+				QTimer::singleShot(std::chrono::milliseconds(500), self, [self]() {
+					if (self && self->m_network) {
+						self->sendStartRequest();
+					}
+				});
 
 				return;
 			}
 
-			self->m_startReply = nullptr;
-
-			if (status != 202) {
+			if (status == 401) {
 				emit self->streamError(
 					QString::fromStdString(streamId),
-					QStringLiteral("Relay feed request failed (%1): %2").arg(status).arg(error));
+					QStringLiteral(
+						"The relay rejected the API key. Check the key in the plugin connection settings."));
 
 				return;
 			}
 
-			self->m_feedCreated = true;
-			const QString link =
-				QJsonDocument::fromJson(response).object().value(QStringLiteral("link")).toString();
+			emit self->streamError(
+				QString::fromStdString(streamId),
+				QStringLiteral("Relay feed request failed (%1): %2").arg(status).arg(error));
 
-			if (link.isEmpty()) {
-				emit self->streamError(QString::fromStdString(streamId),
-						       QStringLiteral("Relay returned no feed link"));
+			return;
+		}
 
-				return;
-			}
+		self->m_feedCreated = true;
+		const QString link =
+			QJsonDocument::fromJson(response).object().value(QStringLiteral("link")).toString();
 
-			emit self->streamReady(QString::fromStdString(streamId), link);
-		});
+		if (link.isEmpty()) {
+			emit self->streamError(QString::fromStdString(streamId),
+					       QStringLiteral("Relay returned no feed link"));
+
+			return;
+		}
+
+		emit self->streamReady(QString::fromStdString(streamId), link);
+	});
 }
 
 void RelayConnectionHandler::stop() {

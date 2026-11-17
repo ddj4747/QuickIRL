@@ -94,6 +94,34 @@ void PluginSource::prepareForShutdown() {
 	MediamtxStreamHandler::prepareForShutdown();
 }
 
+void PluginSource::refreshConnections() {
+	std::vector<obs_source_t *> sources;
+	{
+		std::lock_guard<std::mutex> lock(s_instancesMutex);
+		if (s_shutdownPrepared.load()) {
+			return;
+		}
+
+		for (PluginSource *const source : s_instances) {
+			obs_source_t *const reference = obs_source_get_ref(source->m_source);
+			if (reference) {
+				sources.push_back(reference);
+			}
+		}
+	}
+
+	for (obs_source_t *const obsSource : sources) {
+		PluginSource *const source = fromSource(obsSource);
+		if (source && source->m_activated && source->m_protocol != StreamProtocol::Pull &&
+		    !s_shutdownPrepared.load()) {
+			source->stopReceiver();
+			source->startReceiver();
+		}
+
+		obs_source_release(obsSource);
+	}
+}
+
 std::vector<std::pair<std::string, uint64_t>> PluginSource::getBitrates() {
 	std::lock_guard<std::mutex> lock(s_instancesMutex);
 	std::vector<std::pair<std::string, uint64_t>> bitrates(s_instances.size());
@@ -120,6 +148,9 @@ PluginSource::PluginSource(obs_data_t *settings, obs_source_t *source) : m_sourc
 	}
 
 	(void)readSettings(settings, this);
+	if (m_protocol != StreamProtocol::Pull) {
+		obs_data_set_string(settings, "StreamUrl", "");
+	}
 
 	std::lock_guard<std::mutex> lock(s_instancesMutex);
 	s_instances.insert(this);
@@ -229,12 +260,6 @@ bool PluginSource::readSettings(obs_data_t *settings, PluginSource *source) {
 		return false;
 	}
 
-	if (protocolOpt.value() == StreamProtocol::Pull &&
-	    !MediamtxManager::supportedPullUrl(QString::fromUtf8(obs_data_get_string(settings, "StreamUrl")))) {
-		obs_log(LOG_ERROR, "Enter a valid supported stream URL");
-		return false;
-	}
-
 	std::map<AVCodecID, const AVCodec *> selectedCodecs;
 	for (const auto &[codecId, decoders] : source->m_decoderInfos) {
 		if (decoders.empty()) {
@@ -311,6 +336,23 @@ bool PluginSource::onCopyStreamIdClicked(obs_properties_t *, obs_property_t *, v
 
 bool PluginSource::onCopyStreamUrlClicked(obs_properties_t *, obs_property_t *, void *data) {
 	static_cast<PluginSource *>(data)->copySettingToClipboard("StreamUrl");
+	return false;
+}
+
+bool PluginSource::onOpenConnectionSettingsClicked(obs_properties_t *, obs_property_t *, void *) {
+	if (PluginFrontend::isRunning()) {
+		PluginFrontend::get()->showSettingsWindow();
+	}
+
+	return false;
+}
+
+bool PluginSource::onRetryConnectionClicked(obs_properties_t *, obs_property_t *, void *data) {
+	PluginSource *const source = static_cast<PluginSource *>(data);
+	if (source->m_activated && !source->m_running) {
+		source->startReceiver();
+	}
+
 	return false;
 }
 
@@ -392,12 +434,21 @@ void PluginSource::attachAppQrCodes(const QString &larixLink, const QString &mob
 }
 
 void PluginSource::scheduleAppQrCodes(const bool show) const {
+	const QUrl streamUrl(obs_helpers::fromStdString(m_streamUrl));
+	QString connectionError;
+	{
+		std::lock_guard<std::mutex> lock(m_connectionErrorMutex);
+		connectionError = m_connectionError;
+	}
+
+	const bool showCodes = show && m_protocol != StreamProtocol::Pull && connectionError.isEmpty() &&
+			       streamUrl.isValid() && !streamUrl.scheme().isEmpty() && !streamUrl.host().isEmpty();
 	const QString larix = larixLink();
 	const QString moblin = moblinLink();
 	const QString irlPro = irlProLink();
 
-	QTimer::singleShot(0, QCoreApplication::instance(), [larix, moblin, irlPro, show]() {
-		PluginSource::attachAppQrCodes(larix, moblin, irlPro, show);
+	QTimer::singleShot(0, QCoreApplication::instance(), [larix, moblin, irlPro, showCodes]() {
+		PluginSource::attachAppQrCodes(larix, moblin, irlPro, showCodes);
 	});
 }
 
@@ -406,11 +457,17 @@ void PluginSource::startReceiver() {
 		return;
 	}
 
+	setConnectionError({});
+
 	if (m_protocol != StreamProtocol::Pull) {
-		m_streamUrl.clear();
+		clearGeneratedStreamUrl();
 	}
 
 	if (m_protocol == StreamProtocol::Pull) {
+		if (!MediamtxManager::supportedPullUrl(QString::fromStdString(m_streamUrl))) {
+			return;
+		}
+
 		m_running = true;
 		obs_log(LOG_INFO, "Starting pull source '%s'", m_streamId.c_str());
 
@@ -457,7 +514,13 @@ void PluginSource::startReceiver() {
 	} else if (method == QStringLiteral("relay")) {
 		m_connectionHandler = new RelayConnectionHandler();
 	} else {
-		obs_log(LOG_WARNING, "The selected connection method is not implemented.");
+		const QString error =
+			method == QStringLiteral("port_forwarding")
+				? QStringLiteral(
+					  "Manual port forwarding is not available yet. Choose UPnP or configure a relay server in the plugin settings.")
+				: QStringLiteral("Choose a connection method in the plugin settings.");
+		obs_log(LOG_WARNING, "%s", qUtf8Printable(error));
+		setConnectionError(error);
 		return;
 	}
 
@@ -501,7 +564,16 @@ void PluginSource::onStreamReady(const QString &streamId, const QString &publish
 		return;
 	}
 
+	if (m_protocol != StreamProtocol::Pull) {
+		const QUrl url(publishUrl);
+		if (!url.isValid() || url.scheme().isEmpty() || url.host().isEmpty()) {
+			onStreamError(streamId, QStringLiteral("The connection returned an invalid stream URL."));
+			return;
+		}
+	}
+
 	m_streamUrl = obs_helpers::toStdString(publishUrl);
+	setConnectionError({});
 	updateProperties();
 }
 
@@ -530,15 +602,43 @@ void PluginSource::onStreamError(const QString &streamId, const QString &error) 
 	QObject *const handler = m_connectionHandler ? static_cast<QObject *>(m_connectionHandler)
 						     : static_cast<QObject *>(m_streamHandler);
 	if (m_running && streamId == obs_helpers::fromStdString(m_streamId) && handler) {
+		if (m_protocol != StreamProtocol::Pull) {
+			clearGeneratedStreamUrl();
+		}
+
+		setConnectionError(error);
 		QMetaObject::invokeMethod(
 			handler,
 			[this, streamId] {
 				if (m_running && streamId == obs_helpers::fromStdString(m_streamId)) {
 					stopReceiver();
+					obs_source_update_properties(m_source);
 				}
 			},
 			Qt::QueuedConnection);
 	}
+}
+
+void PluginSource::clearGeneratedStreamUrl() {
+	m_streamUrl.clear();
+	obs_data_t *const settings = obs_source_get_settings(m_source);
+	obs_data_set_string(settings, "StreamUrl", "");
+	obs_data_release(settings);
+	scheduleAppQrCodes(false);
+	obs_source_update_properties(m_source);
+}
+
+void PluginSource::setConnectionError(const QString &error) {
+	{
+		std::lock_guard<std::mutex> lock(m_connectionErrorMutex);
+		if (m_connectionError == error) {
+			return;
+		}
+
+		m_connectionError = error;
+	}
+
+	obs_source_update_properties(m_source);
 }
 
 QString PluginSource::larixLink() const {
@@ -679,6 +779,10 @@ void PluginSource::stopReceiver() {
 	}
 
 	m_running = false;
+	if (m_protocol != StreamProtocol::Pull) {
+		clearGeneratedStreamUrl();
+	}
+
 	stopFrameReceiver();
 	destroyConnectionHandler();
 	destroyStreamHandler();
@@ -711,6 +815,11 @@ uint32_t PluginSource::OnGetHeight(void *data) {
 obs_properties_t *PluginSource::OnGetProperties(void *data) {
 	PluginSource *source = static_cast<PluginSource *>(data);
 	obs_properties_t *props = obs_properties_create();
+	QString connectionError;
+	{
+		std::lock_guard<std::mutex> lock(source->m_connectionErrorMutex);
+		connectionError = source->m_connectionError;
+	}
 
 	obs_property_t *protocolList = obs_properties_add_list(props, "Protocol", "Select Protocol",
 							       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -721,6 +830,18 @@ obs_properties_t *PluginSource::OnGetProperties(void *data) {
 
 	obs_property_t *streamUrl = obs_properties_add_text(props, "StreamUrl", "Stream URL", OBS_TEXT_DEFAULT);
 	obs_property_set_enabled(streamUrl, source->m_protocol == StreamProtocol::Pull);
+	if (!connectionError.isEmpty()) {
+		obs_property_t *const error = obs_properties_add_text(props, "ConnectionError",
+								      qUtf8Printable(connectionError), OBS_TEXT_INFO);
+		obs_property_text_set_info_type(error, OBS_TEXT_INFO_ERROR);
+		obs_properties_add_button2(props, "ConnectionSettings", "Open Connection Settings",
+					   &PluginSource::onOpenConnectionSettingsClicked, source);
+		if (source->m_activated && !source->m_running) {
+			obs_properties_add_button2(props, "RetryConnection", "Retry Connection",
+						   &PluginSource::onRetryConnectionClicked, source);
+		}
+	}
+
 	obs_properties_add_button2(props, "CopyStreamUrl", "Copy", &PluginSource::onCopyStreamUrlClicked, source);
 
 	obs_property_t *const urlRequired =

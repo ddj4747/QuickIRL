@@ -2,6 +2,7 @@
 
 #include <QVBoxLayout>
 #include <QScrollArea>
+#include <QTimer>
 #include <obs-frontend-api.h>
 #include <SourcePartitionSelector.h>
 #include <PartitionSettingsWidget.h>
@@ -30,6 +31,7 @@ private slots:
 
 private:
 	void setFocusedPartition(int partition);
+	void saveConnectionSettings();
 
 	SourcePartitionSelector *m_sourcePartitionSelector;
 	QScrollArea *m_partitionScrollArea;
@@ -37,6 +39,10 @@ private:
 	QVBoxLayout *m_partitionSettingsLayout;
 	QList<PartitionSettingsWidget *> m_partitionSettings;
 	QVBoxLayout *m_mainLayout;
+	QTimer *m_refreshSourcesTimer;
+	QString m_savedConnectionMethod;
+	QString m_savedRelayUrl;
+	QString m_savedRelayApiKey;
 	int m_focusedPartitionSettings = -1;
 	bool m_ignoreHoverFocus = false;
 };

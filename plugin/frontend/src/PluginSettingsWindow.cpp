@@ -1,11 +1,13 @@
 #include <PluginSettingsWindow.h>
 #include <PluginFrontend.h>
+#include <PluginSource.h>
 #include <PortForwardUtils.h>
 #include <plugin-support.h>
 #include <QButtonGroup>
 #include <QFrame>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QLabel>
 #include <QLineEdit>
 #include <QRadioButton>
 #include <QTabWidget>
@@ -17,7 +19,8 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 	  m_partitionScrollContent(new QWidget(this)),
 	  m_partitionSettingsLayout(new QVBoxLayout(m_partitionScrollContent)),
 	  m_partitionScrollArea(new QScrollArea(this)),
-	  m_mainLayout(new QVBoxLayout(this)) {
+	  m_mainLayout(new QVBoxLayout(this)),
+	  m_refreshSourcesTimer(new QTimer(this)) {
 
 	setWindowTitle(QStringLiteral("%1 Settings").arg(PLUGIN_NAME));
 
@@ -49,6 +52,11 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 	connectionMethods->addButton(relayButton, 1);
 	connectionMethods->addButton(portForwardingButton, 2);
 	connectionLayout->addWidget(upnpButton);
+	QLabel *const upnpUnavailable =
+		new QLabel(QStringLiteral("UPnP is unavailable. Enable it on your router or configure a relay server."),
+			   connectionGroup);
+	upnpUnavailable->setWordWrap(true);
+	connectionLayout->addWidget(upnpUnavailable);
 	connectionLayout->addWidget(relayButton);
 
 	QWidget *const relaySettings = new QWidget(connectionGroup);
@@ -59,22 +67,41 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 	relayApiKey->setEchoMode(QLineEdit::Password);
 	relayLayout->addRow(QStringLiteral("Relay server URL"), relayAddress);
 	relayLayout->addRow(QStringLiteral("Relay API key"), relayApiKey);
+	QLabel *const relayPlaybackNotice = new QLabel(
+		QStringLiteral(
+			"Relay feed creation is available, but receiving relay video in OBS is not supported yet."),
+		relaySettings);
+	relayPlaybackNotice->setWordWrap(true);
+	relayLayout->addRow(relayPlaybackNotice);
 	connectionLayout->addWidget(relaySettings);
 	connectionLayout->addWidget(portForwardingButton);
+	QLabel *const manualForwardingUnavailable = new QLabel(
+		QStringLiteral("Manual port forwarding is not available yet. Choose UPnP or configure a relay server."),
+		connectionGroup);
+	manualForwardingUnavailable->setWordWrap(true);
+	connectionLayout->addWidget(manualForwardingUnavailable);
 	generalLayout->addWidget(connectionGroup);
 	generalLayout->addStretch();
 
 	obs_data_t *const settings = PluginFrontend::get()->getSettingsObject();
+	m_savedConnectionMethod = QString::fromUtf8(obs_data_get_string(settings, "connectionMethod"));
+	m_savedRelayUrl = QString::fromUtf8(obs_data_get_string(settings, "relayServerUrl"));
+	m_savedRelayApiKey = QString::fromUtf8(obs_data_get_string(settings, "relayServerApiKey"));
+	m_refreshSourcesTimer->setSingleShot(true);
+	m_refreshSourcesTimer->setInterval(750);
+	connect(m_refreshSourcesTimer, &QTimer::timeout, this, &PluginSource::refreshConnections);
 	relayAddress->setText(QString::fromUtf8(obs_data_get_string(settings, "relayServerUrl")));
 	relayApiKey->setText(QString::fromUtf8(obs_data_get_string(settings, "relayServerApiKey")));
 
-	const auto refreshAvailability = [settings, upnpButton, relayButton, portForwardingButton, relaySettings]() {
+	const auto refreshAvailability = [settings, upnpButton, relayButton, portForwardingButton, relaySettings,
+					  upnpUnavailable, manualForwardingUnavailable]() {
 		if (!PluginFrontend::isRunning()) {
 			return;
 		}
 
 		const bool available = PortForwarder::isForwardingPossible();
 		upnpButton->setEnabled(available);
+		upnpUnavailable->setVisible(!available);
 
 		const bool hasSelection = obs_data_has_user_value(settings, "connectionMethod");
 		const QString method = QString::fromUtf8(obs_data_get_string(settings, "connectionMethod"));
@@ -88,12 +115,13 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 		}
 
 		relaySettings->setVisible(relayButton->isChecked());
+		manualForwardingUnavailable->setVisible(portForwardingButton->isChecked());
 	};
 
 	refreshAvailability();
 
 	connect(connectionMethods, &QButtonGroup::idClicked, this,
-		[settings, relaySettings, relayButton](const int id) {
+		[this, settings, relaySettings, relayButton, manualForwardingUnavailable](const int id) {
 			if (!PluginFrontend::isRunning()) {
 				return;
 			}
@@ -101,14 +129,15 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 			const char *const method = id == 0 ? "upnp" : (id == 1 ? "relay" : "port_forwarding");
 			obs_data_set_string(settings, "connectionMethod", method);
 			relaySettings->setVisible(relayButton->isChecked());
-			PluginFrontend::get()->saveSettingsObject();
+			manualForwardingUnavailable->setVisible(id == 2);
+			saveConnectionSettings();
 		});
 	QTimer *const relaySettingsSaveTimer = new QTimer(generalTab);
 	relaySettingsSaveTimer->setSingleShot(true);
 	relaySettingsSaveTimer->setInterval(500);
-	connect(relaySettingsSaveTimer, &QTimer::timeout, this, []() {
+	connect(relaySettingsSaveTimer, &QTimer::timeout, this, [this]() {
 		if (PluginFrontend::isRunning()) {
-			PluginFrontend::get()->saveSettingsObject();
+			saveConnectionSettings();
 		}
 	});
 
@@ -128,10 +157,10 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 		obs_data_set_string(settings, "relayServerApiKey", text.toUtf8().constData());
 		relaySettingsSaveTimer->start();
 	});
-	const auto saveRelaySettings = [relaySettingsSaveTimer]() {
+	const auto saveRelaySettings = [this, relaySettingsSaveTimer]() {
 		relaySettingsSaveTimer->stop();
 		if (PluginFrontend::isRunning()) {
-			PluginFrontend::get()->saveSettingsObject();
+			saveConnectionSettings();
 		}
 	};
 	connect(relayAddress, &QLineEdit::editingFinished, this, saveRelaySettings);
@@ -165,6 +194,26 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 }
 
 PluginSettingsWindow::~PluginSettingsWindow() = default;
+
+void PluginSettingsWindow::saveConnectionSettings() {
+	obs_data_t *const settings = PluginFrontend::get()->getSettingsObject();
+	const QString method = QString::fromUtf8(obs_data_get_string(settings, "connectionMethod"));
+	const QString relayUrl = QString::fromUtf8(obs_data_get_string(settings, "relayServerUrl"));
+	const QString relayApiKey = QString::fromUtf8(obs_data_get_string(settings, "relayServerApiKey"));
+	const bool relayChanged = relayUrl != m_savedRelayUrl || relayApiKey != m_savedRelayApiKey;
+	const bool connectionChanged = method != m_savedConnectionMethod ||
+				       (relayChanged && (method == QStringLiteral("relay") ||
+							 (method.isEmpty() && !PortForwarder::isForwardingPossible())));
+
+	m_savedConnectionMethod = method;
+	m_savedRelayUrl = relayUrl;
+	m_savedRelayApiKey = relayApiKey;
+	PluginFrontend::get()->saveSettingsObject();
+
+	if (connectionChanged) {
+		m_refreshSourcesTimer->start();
+	}
+}
 
 void PluginSettingsWindow::onPartitionSelectorValueChanged() {
 	const QList<int> values = m_sourcePartitionSelector->getHandleValues();
