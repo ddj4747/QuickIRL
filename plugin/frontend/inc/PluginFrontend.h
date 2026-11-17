@@ -45,6 +45,7 @@ public:
 	void showWebPanelWindow() const;
 
 	obs_data_t *getSettingsObject();
+	static obs_data_t *acquireSettingsObject();
 
 	void saveSettingsObject() const;
 

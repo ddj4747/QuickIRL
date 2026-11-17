@@ -1,4 +1,6 @@
 #include <PluginSource.h>
+#include <RelayConnectionHandler.h>
+#include <UpnpConnectionHandler.h>
 
 #include "EventManager.h"
 #include "PluginDock.h"
@@ -283,30 +285,6 @@ std::string PluginSource::generateStreamId() {
 	return uuidStr.substr(1, uuidStr.size() - 2);
 }
 
-std::vector<PluginSource::ForwardingConfig> PluginSource::forwardingConfigs() const {
-	switch (m_protocol) {
-	case StreamProtocol::SRTLA:
-		return {{c_srtlaPort, PortForwarder::Protocol::UDP}};
-	case StreamProtocol::SRT:
-		return {{c_srtPort, PortForwarder::Protocol::UDP}};
-	case StreamProtocol::RTMP:
-		return {{c_rtmpPort, PortForwarder::Protocol::TCP}};
-	case StreamProtocol::RTSP:
-		return {{c_rtspPort, PortForwarder::Protocol::TCP},
-			{c_rtspRtpPort, PortForwarder::Protocol::UDP},
-			{c_rtspRtcpPort, PortForwarder::Protocol::UDP}};
-	case StreamProtocol::WebRTC:
-		return {{c_webrtcHttpPort, PortForwarder::Protocol::TCP},
-			{c_webrtcIcePort, PortForwarder::Protocol::UDP}};
-	case StreamProtocol::MoQ:
-		return {{c_moqHttpPort, PortForwarder::Protocol::TCP},
-			{c_moqHttpPort, PortForwarder::Protocol::UDP},
-			{c_moqQuicPort, PortForwarder::Protocol::UDP}};
-	default:
-		return {{PortForwarder::getAvailablePort(), PortForwarder::Protocol::UDP}};
-	}
-}
-
 void PluginSource::deleteOnOwningThread(QObject *object) {
 	if (!object) {
 		return;
@@ -464,74 +442,45 @@ void PluginSource::startReceiver() {
 		return;
 	}
 
-	const std::vector<ForwardingConfig> configs = forwardingConfigs();
-	if (configs.empty() ||
-	    std::ranges::any_of(configs, [](const ForwardingConfig &config) { return config.port == 0; })) {
-		obs_log(LOG_ERROR, "failed to allocate a listener port");
+	QString method = QStringLiteral("upnp");
+	obs_data_t *const settings = PluginFrontend::acquireSettingsObject();
+	if (obs_data_has_user_value(settings, "connectionMethod")) {
+		method = QString::fromUtf8(obs_data_get_string(settings, "connectionMethod"));
+	} else if (!PortForwarder::isForwardingPossible()) {
+		method = QStringLiteral("relay");
+	}
+
+	obs_data_release(settings);
+
+	if (method == QStringLiteral("upnp")) {
+		m_connectionHandler = new UpnpConnectionHandler();
+	} else if (method == QStringLiteral("relay")) {
+		m_connectionHandler = new RelayConnectionHandler();
+	} else {
+		obs_log(LOG_WARNING, "The selected connection method is not implemented.");
 		return;
 	}
 
-	m_portForwarders.reserve(configs.size());
-	const auto &[port, protocol] = configs.front();
-	m_portForwarders.push_back(new PortForwarder(port, protocol));
-	PortForwarder::waitForInitialAvailabilityCheck();
-	if (!PortForwarder::isForwardingPossible()) {
-		obs_log(LOG_WARNING, "UPnP is unavailable; the stream receiver cannot be forwarded.");
-		destroyPortForwarder();
-		return;
-	}
-
-	for (size_t i = 1; i < configs.size(); ++i) {
-		const ForwardingConfig &config = configs[i];
-		m_portForwarders.push_back(new PortForwarder(config.port, config.protocol));
-	}
-
-	m_pendingPortForwards = static_cast<uint8_t>(m_portForwarders.size());
 	m_running = true;
-
-	for (PortForwarder *portForwarder : m_portForwarders) {
-		QObject::connect(portForwarder, &PortForwarder::onPortForwardFinished, portForwarder,
-				 [this, portForwarder](const bool success) {
-					 onPortForwardFinished(portForwarder, success);
-				 });
-
-		portForwarder->moveToThread(QCoreApplication::instance()->thread());
-		QMetaObject::invokeMethod(
-			portForwarder, [portForwarder]() { portForwarder->forward(); }, Qt::QueuedConnection);
-	}
-}
-
-void PluginSource::onPortForwardFinished(const PortForwarder *portForwarder, const bool success) {
-	if (!m_running || std::ranges::find(m_portForwarders, portForwarder) == m_portForwarders.end()) {
-		return;
-	}
-	if (!success || !PortForwarder::isForwardingPossible() || m_pendingPortForwards == 0) {
-		stopReceiver();
-		return;
-	}
-	if (--m_pendingPortForwards == 0) {
-		startStreamHandler();
-	}
+	ConnectionHandler *const handler = m_connectionHandler;
+	QObject::connect(handler, &ConnectionHandler::streamReady, handler,
+			 [this](const QString &streamId, const QString &url) { onStreamReady(streamId, url); });
+	QObject::connect(handler, &ConnectionHandler::streamAvailable, handler,
+			 [this](const QString &streamId) { onStreamAvailable(streamId); });
+	QObject::connect(handler, &ConnectionHandler::streamUnavailable, handler,
+			 [this](const QString &streamId) { onStreamUnavailable(streamId); });
+	QObject::connect(handler, &ConnectionHandler::streamStopped, handler,
+			 [this](const QString &streamId) { onStreamStopped(streamId); });
+	QObject::connect(handler, &ConnectionHandler::streamError, handler,
+			 [this](const QString &streamId, const QString &error) { onStreamError(streamId, error); });
+	handler->moveToThread(QCoreApplication::instance()->thread());
+	QMetaObject::invokeMethod(
+		handler, [this, handler]() { handler->start(m_streamId, m_protocol); }, Qt::QueuedConnection);
 }
 
 void PluginSource::startStreamHandler() {
-	if (m_protocol != StreamProtocol::Pull && !PortForwarder::isForwardingPossible()) {
-		stopReceiver();
-		return;
-	}
-
-	const std::optional<std::string> publicAddressOpt = m_protocol == StreamProtocol::Pull
-								    ? std::optional<std::string>(m_streamUrl)
-								    : m_portForwarders.front()->publicAddress();
-	if (!publicAddressOpt.has_value()) {
-		stopReceiver();
-		return;
-	}
-
 	destroyStreamHandler();
-	m_streamHandler = m_protocol == StreamProtocol::SRTLA
-				  ? static_cast<StreamHandler *>(new GoIRLStreamHandler())
-				  : static_cast<StreamHandler *>(new MediamtxStreamHandler());
+	m_streamHandler = new MediamtxStreamHandler();
 	QObject::connect(m_streamHandler, &StreamHandler::streamReady, m_streamHandler,
 			 [this](const QString &streamId, const QString &publishUrl) {
 				 onStreamReady(streamId, publishUrl);
@@ -544,8 +493,7 @@ void PluginSource::startStreamHandler() {
 			 [this](const QString &streamId) { onStreamStopped(streamId); });
 	QObject::connect(m_streamHandler, &StreamHandler::streamError, m_streamHandler,
 			 [this](const QString &streamId, const QString &error) { onStreamError(streamId, error); });
-	m_streamHandler->start(m_streamId, m_protocol, publicAddressOpt.value(),
-			       m_portForwarders.empty() ? 0 : m_portForwarders.front()->port());
+	m_streamHandler->start(m_streamId, m_protocol, m_streamUrl, 0);
 }
 
 void PluginSource::onStreamReady(const QString &streamId, const QString &publishUrl) {
@@ -579,9 +527,11 @@ void PluginSource::onStreamStopped(const QString &streamId) {
 void PluginSource::onStreamError(const QString &streamId, const QString &error) {
 	obs_log(LOG_ERROR, "stream handler error for '%s': %s", qUtf8Printable(streamId), qUtf8Printable(error));
 
-	if (m_running && streamId == obs_helpers::fromStdString(m_streamId) && m_streamHandler) {
+	QObject *const handler = m_connectionHandler ? static_cast<QObject *>(m_connectionHandler)
+						     : static_cast<QObject *>(m_streamHandler);
+	if (m_running && streamId == obs_helpers::fromStdString(m_streamId) && handler) {
 		QMetaObject::invokeMethod(
-			m_streamHandler,
+			handler,
 			[this, streamId] {
 				if (m_running && streamId == obs_helpers::fromStdString(m_streamId)) {
 					stopReceiver();
@@ -661,8 +611,7 @@ void PluginSource::startFrameReceiver() {
 	}
 
 	if (m_protocol == StreamProtocol::SRTLA) {
-		const auto *handler = dynamic_cast<const GoIRLStreamHandler *>(m_streamHandler);
-		const uint16_t port = handler ? handler->localSrtPort() : 0;
+		const uint16_t port = m_connectionHandler ? m_connectionHandler->localSrtPort() : 0;
 		if (port == 0) {
 			obs_log(LOG_ERROR, "SRTLA reader has no local SRT port");
 			return;
@@ -693,14 +642,11 @@ void PluginSource::stopFrameReceiver() {
 	m_frameReceiver = nullptr;
 }
 
-void PluginSource::destroyPortForwarder() {
-	const std::vector<PortForwarder *> portForwarders = std::move(m_portForwarders);
-	m_pendingPortForwards = 0;
-	for (PortForwarder *forwarder : portForwarders) {
-		if (forwarder) {
-			(void)forwarder->disconnect();
-			deleteOnOwningThread(forwarder);
-		}
+void PluginSource::destroyConnectionHandler() {
+	ConnectionHandler *const handler = m_connectionHandler;
+	m_connectionHandler = nullptr;
+	if (handler) {
+		deleteOnOwningThread(handler);
 	}
 }
 
@@ -734,7 +680,7 @@ void PluginSource::stopReceiver() {
 
 	m_running = false;
 	stopFrameReceiver();
-	destroyPortForwarder();
+	destroyConnectionHandler();
 	destroyStreamHandler();
 }
 

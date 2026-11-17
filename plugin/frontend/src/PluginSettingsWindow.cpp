@@ -1,6 +1,14 @@
 #include <PluginSettingsWindow.h>
+#include <PluginFrontend.h>
+#include <PortForwardUtils.h>
 #include <plugin-support.h>
+#include <QButtonGroup>
 #include <QFrame>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QLineEdit>
+#include <QRadioButton>
+#include <QTabWidget>
 #include <QTimer>
 
 PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
@@ -26,8 +34,120 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 	m_partitionScrollArea->setFrameShape(QFrame::NoFrame);
 	m_partitionScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
-	m_mainLayout->addWidget(m_sourcePartitionSelector);
-	m_mainLayout->addWidget(m_partitionScrollArea, 1);
+	QTabWidget *const tabs = new QTabWidget(this);
+	QWidget *const generalTab = new QWidget(tabs);
+	QWidget *const sceneSwitcherTab = new QWidget(tabs);
+	QVBoxLayout *const generalLayout = new QVBoxLayout(generalTab);
+	QGroupBox *const connectionGroup = new QGroupBox(QStringLiteral("Connection"), generalTab);
+	QVBoxLayout *const connectionLayout = new QVBoxLayout(connectionGroup);
+	QButtonGroup *const connectionMethods = new QButtonGroup(connectionGroup);
+	QRadioButton *const upnpButton = new QRadioButton(QStringLiteral("UPnP"), connectionGroup);
+	QRadioButton *const relayButton = new QRadioButton(QStringLiteral("Relay server"), connectionGroup);
+	QRadioButton *const portForwardingButton = new QRadioButton(QStringLiteral("Port forwarding"), connectionGroup);
+
+	connectionMethods->addButton(upnpButton, 0);
+	connectionMethods->addButton(relayButton, 1);
+	connectionMethods->addButton(portForwardingButton, 2);
+	connectionLayout->addWidget(upnpButton);
+	connectionLayout->addWidget(relayButton);
+
+	QWidget *const relaySettings = new QWidget(connectionGroup);
+	QFormLayout *const relayLayout = new QFormLayout(relaySettings);
+	QLineEdit *const relayAddress = new QLineEdit(relaySettings);
+	QLineEdit *const relayApiKey = new QLineEdit(relaySettings);
+	relayAddress->setPlaceholderText(QStringLiteral("https://relay.example.com:8080"));
+	relayApiKey->setEchoMode(QLineEdit::Password);
+	relayLayout->addRow(QStringLiteral("Relay server URL"), relayAddress);
+	relayLayout->addRow(QStringLiteral("Relay API key"), relayApiKey);
+	connectionLayout->addWidget(relaySettings);
+	connectionLayout->addWidget(portForwardingButton);
+	generalLayout->addWidget(connectionGroup);
+	generalLayout->addStretch();
+
+	obs_data_t *const settings = PluginFrontend::get()->getSettingsObject();
+	relayAddress->setText(QString::fromUtf8(obs_data_get_string(settings, "relayServerUrl")));
+	relayApiKey->setText(QString::fromUtf8(obs_data_get_string(settings, "relayServerApiKey")));
+
+	const auto refreshAvailability = [settings, upnpButton, relayButton, portForwardingButton, relaySettings]() {
+		if (!PluginFrontend::isRunning()) {
+			return;
+		}
+
+		const bool available = PortForwarder::isForwardingPossible();
+		upnpButton->setEnabled(available);
+
+		const bool hasSelection = obs_data_has_user_value(settings, "connectionMethod");
+		const QString method = QString::fromUtf8(obs_data_get_string(settings, "connectionMethod"));
+
+		if ((!hasSelection || method == QStringLiteral("upnp")) && available) {
+			upnpButton->setChecked(true);
+		} else if (method == QStringLiteral("port_forwarding")) {
+			portForwardingButton->setChecked(true);
+		} else {
+			relayButton->setChecked(true);
+		}
+
+		relaySettings->setVisible(relayButton->isChecked());
+	};
+
+	refreshAvailability();
+
+	connect(connectionMethods, &QButtonGroup::idClicked, this,
+		[settings, relaySettings, relayButton](const int id) {
+			if (!PluginFrontend::isRunning()) {
+				return;
+			}
+
+			const char *const method = id == 0 ? "upnp" : (id == 1 ? "relay" : "port_forwarding");
+			obs_data_set_string(settings, "connectionMethod", method);
+			relaySettings->setVisible(relayButton->isChecked());
+			PluginFrontend::get()->saveSettingsObject();
+		});
+	QTimer *const relaySettingsSaveTimer = new QTimer(generalTab);
+	relaySettingsSaveTimer->setSingleShot(true);
+	relaySettingsSaveTimer->setInterval(500);
+	connect(relaySettingsSaveTimer, &QTimer::timeout, this, []() {
+		if (PluginFrontend::isRunning()) {
+			PluginFrontend::get()->saveSettingsObject();
+		}
+	});
+
+	connect(relayAddress, &QLineEdit::textChanged, this, [settings, relaySettingsSaveTimer](const QString &text) {
+		if (!PluginFrontend::isRunning()) {
+			return;
+		}
+
+		obs_data_set_string(settings, "relayServerUrl", text.toUtf8().constData());
+		relaySettingsSaveTimer->start();
+	});
+	connect(relayApiKey, &QLineEdit::textChanged, this, [settings, relaySettingsSaveTimer](const QString &text) {
+		if (!PluginFrontend::isRunning()) {
+			return;
+		}
+
+		obs_data_set_string(settings, "relayServerApiKey", text.toUtf8().constData());
+		relaySettingsSaveTimer->start();
+	});
+	const auto saveRelaySettings = [relaySettingsSaveTimer]() {
+		relaySettingsSaveTimer->stop();
+		if (PluginFrontend::isRunning()) {
+			PluginFrontend::get()->saveSettingsObject();
+		}
+	};
+	connect(relayAddress, &QLineEdit::editingFinished, this, saveRelaySettings);
+	connect(relayApiKey, &QLineEdit::editingFinished, this, saveRelaySettings);
+
+	QTimer *const availabilityTimer = new QTimer(generalTab);
+	connect(availabilityTimer, &QTimer::timeout, generalTab, refreshAvailability);
+	availabilityTimer->start(std::chrono::seconds(1));
+
+	QVBoxLayout *const sceneSwitcherLayout = new QVBoxLayout(sceneSwitcherTab);
+	sceneSwitcherLayout->addWidget(m_sourcePartitionSelector);
+	sceneSwitcherLayout->addWidget(m_partitionScrollArea, 1);
+
+	tabs->addTab(generalTab, QStringLiteral("General"));
+	tabs->addTab(sceneSwitcherTab, QStringLiteral("Scene Switcher"));
+	m_mainLayout->addWidget(tabs, 1);
 
 	setMinimumWidth(700);
 	setMinimumHeight(600);
@@ -47,7 +167,7 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 PluginSettingsWindow::~PluginSettingsWindow() = default;
 
 void PluginSettingsWindow::onPartitionSelectorValueChanged() {
-	const auto values = m_sourcePartitionSelector->getHandleValues();
+	const QList<int> values = m_sourcePartitionSelector->getHandleValues();
 	const qsizetype targetCount = values.count() + 1;
 
 	while (m_partitionSettings.count() > targetCount) {
@@ -74,7 +194,7 @@ void PluginSettingsWindow::onPartitionSelectorValueChanged() {
 		m_partitionSettingsLayout->addWidget(m_partitionSettings.back());
 	}
 
-	for (const auto &partition : m_partitionSettings) {
+	for (PartitionSettingsWidget *const partition : m_partitionSettings) {
 		partition->updateValue(10000);
 	}
 }
