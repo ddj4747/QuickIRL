@@ -11,7 +11,7 @@ PluginSettingsWindow::PluginSettingsWindow(QWidget *parent)
 	  m_partitionScrollArea(new QScrollArea(this)),
 	  m_mainLayout(new QVBoxLayout(this)) {
 
-	setWindowTitle(QStringLiteral("%1 Settings").arg(PLUGIN_NAME));
+	setWindowTitle(QStringLiteral("%1 Settings").arg(PLUGIN_DISPLAY_NAME));
 
 	m_mainLayout->setContentsMargins(12, 12, 12, 12);
 	m_mainLayout->setSpacing(12);

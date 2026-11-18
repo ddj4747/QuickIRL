@@ -729,7 +729,8 @@ void PluginSource::prepareInstanceForShutdown() {
 }
 
 const char *PluginSource::OnGetName(void *) {
-	return id();
+	static const QByteArray name = QByteArray(PLUGIN_DISPLAY_NAME) + " Source";
+	return name.constData();
 }
 
 void *PluginSource::OnCreate(obs_data_t *settings, obs_source_t *source) {

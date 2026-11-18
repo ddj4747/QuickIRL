@@ -22,7 +22,7 @@ PluginWebPanelWindow::PluginWebPanelWindow(QWidget *parent)
 	  m_generateButton(new QPushButton(QStringLiteral("Generate new"), this)),
 	  m_qrLabel(new QLabel(this)) {
 
-	setWindowTitle(QStringLiteral("%1 Web Panel").arg(PLUGIN_NAME));
+	setWindowTitle(QStringLiteral("%1 Web Panel").arg(PLUGIN_DISPLAY_NAME));
 	setMinimumWidth(700);
 	setMinimumHeight(600);
 

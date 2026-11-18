@@ -164,7 +164,7 @@ PluginDock::PluginDock(QWidget *parent)
 			      "#sourcesToolbar { background: transparent; border: none; }")
 			      .arg(PLUGIN_DOCK_ID.c_str()));
 
-	if (m_obsDockRegistered = obs_frontend_add_dock_by_id(PLUGIN_DOCK_ID.c_str(), PLUGIN_NAME, this);
+	if (m_obsDockRegistered = obs_frontend_add_dock_by_id(PLUGIN_DOCK_ID.c_str(), PLUGIN_DISPLAY_NAME, this);
 	    !m_obsDockRegistered) {
 		obs_log(LOG_WARNING, "failed to register dock '%s'", PLUGIN_DOCK_ID.c_str());
 		return;
