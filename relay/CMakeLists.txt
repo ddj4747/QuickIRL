@@ -25,6 +25,7 @@ file(
   "${CMAKE_CURRENT_SOURCE_DIR}/inc/*.hpp"
 )
 add_executable(relay_server ${RELAY_SOURCES} ${RELAY_HEADERS})
+target_compile_definitions(relay_server PRIVATE CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=131072)
 target_include_directories(relay_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
 target_link_libraries(
   relay_server

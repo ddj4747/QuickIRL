@@ -22,7 +22,7 @@ RUN cmake -S . -B /build -DCMAKE_BUILD_TYPE=Release \
 
 FROM ubuntu:24.04
 
-EXPOSE 8080/tcp 5000/udp 8890/udp 8554/tcp 8554/udp 8000/udp 8001/udp \
+EXPOSE 8080/tcp 8081/tcp 5000/udp 8890/udp 8554/tcp 8554/udp 8000/udp 8001/udp \
        1935/tcp 8889/tcp 8892/tcp 8892/udp 8893/udp
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

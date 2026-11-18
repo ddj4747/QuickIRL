@@ -26,6 +26,7 @@ bool RelayConfig::load(const QString &directory, RelayConfig &config, QString &e
 		const QByteArray defaults = R"(# Restart the relay after changing these ports.
 ports:
   api: 8080
+  obs_control: 8081
   srtla: 5000
   srt: 8890
   rtsp: 8554
@@ -60,12 +61,12 @@ ports:
 
 	RelayConfig parsed;
 	const std::map<std::string, uint16_t RelayConfig::*> fields = {
-		{"api", &RelayConfig::apiPort},           {"srtla", &RelayConfig::srtlaPort},
-		{"srt", &RelayConfig::srtPort},           {"rtsp", &RelayConfig::rtspPort},
-		{"rtp", &RelayConfig::rtpPort},           {"rtcp", &RelayConfig::rtcpPort},
-		{"rtmp", &RelayConfig::rtmpPort},         {"webrtc", &RelayConfig::webRtcPort},
-		{"moq", &RelayConfig::moqPort},           {"moq_quic", &RelayConfig::moqQuicPort},
-		{"media_api", &RelayConfig::mediaApiPort}};
+		{"api", &RelayConfig::apiPort},          {"obs_control", &RelayConfig::obsControlPort},
+		{"srtla", &RelayConfig::srtlaPort},      {"srt", &RelayConfig::srtPort},
+		{"rtsp", &RelayConfig::rtspPort},        {"rtp", &RelayConfig::rtpPort},
+		{"rtcp", &RelayConfig::rtcpPort},        {"rtmp", &RelayConfig::rtmpPort},
+		{"webrtc", &RelayConfig::webRtcPort},    {"moq", &RelayConfig::moqPort},
+		{"moq_quic", &RelayConfig::moqQuicPort}, {"media_api", &RelayConfig::mediaApiPort}};
 
 	try {
 		const YAML::Node root =

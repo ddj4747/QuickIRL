@@ -148,6 +148,25 @@ obs_data_t *PluginFrontend::getSettingsObject() {
 	return m_settings;
 }
 
+obs_data_t *PluginFrontend::acquireSettingsObject() {
+	if (s_instance) {
+		obs_data_t *const settings = s_instance->getSettingsObject();
+		obs_data_addref(settings);
+
+		return settings;
+	}
+
+	char *const settingsPath = obs_module_config_path(QString("%1_config.json").arg(PLUGIN_NAME).toUtf8());
+	if (!settingsPath) {
+		return obs_data_create();
+	}
+
+	obs_data_t *settings = obs_data_create_from_json_file(settingsPath);
+	bfree(settingsPath);
+
+	return settings ? settings : obs_data_create();
+}
+
 void PluginFrontend::saveSettingsObject() const {
 	if (!m_settings) {
 		return;

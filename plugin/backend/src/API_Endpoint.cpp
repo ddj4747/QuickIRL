@@ -114,7 +114,12 @@ bool API_Endpoint::start() {
 	}
 
 	m_portForwarder = std::make_unique<PortForwarder>(getPort(), PortForwarder::Protocol::TCP);
-	m_portForwarder->forward();
+	PortForwarder::waitForInitialAvailabilityCheck();
+	if (PortForwarder::isForwardingPossible()) {
+		m_portForwarder->forward();
+	} else {
+		obs_log(LOG_INFO, "UPnP is unavailable; the API endpoint will not be forwarded.");
+	}
 
 	m_httpExited = false;
 	m_httpThread = std::thread([this] {
@@ -181,7 +186,7 @@ uint16_t API_Endpoint::getPort() {
 }
 
 QString API_Endpoint::getIp() const {
-	if (!m_portForwarder) {
+	if (!m_portForwarder || !PortForwarder::isForwardingPossible()) {
 		return {};
 	}
 

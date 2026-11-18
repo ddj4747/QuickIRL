@@ -24,6 +24,10 @@ and `SRTLA`.
 - `GET /feeds` returns a JSON array of objects containing `protocol`,
   `streamKey`, `link`, and `status` (`starting`, `running`, `stopping`, or
   `failed`). Failed entries include an `error` field.
+- `GET /obs-control` returns the public OBS control HTTPS `address` and OBS
+  `websocket` connection URL, for example
+  `{"address":"https://relay.example:8081","websocket":"wss://relay.example:8081/_relay/obs"}`.
+  Both URLs use the configured OBS control port.
 - `GET /status` returns `{"status":"ok"}` while the authenticated API is
   responding; it does not check the health of each feed.
 
@@ -65,6 +69,7 @@ localhost. The relay manages `mediamtx.yml` separately; do not edit that file.
 ```yaml
 ports:
   api: 8080
+  obs_control: 8081
   srtla: 5000
   srt: 8890
   rtsp: 8554
@@ -84,11 +89,54 @@ directory at `/var/lib/relay` to edit and retain `relay.yml`, certificates,
 and the API key. For example, after creating that directory and its config:
 
 ```sh
-docker run -v /path/to/relay-data:/var/lib/relay -p 8081:8081 obs-relay
+docker run -v /path/to/relay-data:/var/lib/relay -p 8082:8082 obs-relay
 ```
 
-Set `ports.api: 8081` in the mounted file for this example. The image's
+Set `ports.api: 8082` in the mounted file for this example. The image's
 `EXPOSE` metadata lists the default ports and does not publish them.
+
+## OBS control relay
+
+The relay exposes a separate HTTPS control port, `ports.obs_control` (default
+`8081`). HTTP clients use the relay's `api-key` in the `Authorization`
+header. The relay accepts one OBS control connection at a time; OBS connects
+to `wss://relay-host:8081/_relay/obs` with the separate `obs-key` as its
+`Authorization` header. Both keys are generated in `RELAY_CONFIG_DIR` on
+first startup. Run `obs-relay --generate-obs-key` to replace and print the OBS
+key. Key changes apply to new connections; disconnect an existing OBS session
+to revoke it. Protect both keys, and verify or pin the relay's certificate when
+connecting to its self-signed TLS server.
+
+The OBS plugin does not yet implement this connection. Once it does, callers
+can send the same method and path used by the plugin's HTTP API to this port:
+`GET /getBitrates`, `GET /getSceneList`, `GET /streamState`,
+`GET /getPluginSources`, `POST /setActiveScene`, `POST /startStream`, and
+`POST /stopStream`. The query string, request body, and Content-Type are
+forwarded. Other paths are not forwarded. There is no inbound listener on the
+OBS machine in this design. Docker users must publish the control port, e.g.
+`-p 8081:8081`.
+
+The WebSocket carries UTF-8 JSON text messages. Each request has a unique ID:
+
+```json
+{"type":"request","id":"...","method":"POST","target":"/setActiveScene?sceneName=Scene","content_type":"","body_base64":""}
+```
+
+The OBS client must execute the requested operation using its shared OBS command
+handlers and send one response with the same ID:
+
+```json
+{"type":"response","id":"...","status":200,"content_type":"application/json","body_base64":"e30="}
+```
+
+`target` includes the query string. Bodies are base64 encoded bytes; an empty
+body is `""`. Status must be an integer from 200 to 599. The relay forwards
+the status, body and Content-Type, with no other headers or credentials. HTTP
+request and response bodies are limited to 64 KiB. Multiple requests can be in
+flight and responses may arrive out of order. The relay returns `503` when OBS
+is disconnected or capacity is exhausted, and `504` after 15 seconds without
+a response. A timeout does not prove that OBS did not execute the command, so
+clients should not automatically retry operations that change state.
 
 `FeedContext` wraps one feed's protocol, stream key, address, and asynchronous
 start/stop lifecycle. It uses a shared MediaMTX manager for supported media

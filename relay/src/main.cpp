@@ -15,11 +15,21 @@ int main(int argc, char **argv) {
 		QStringLiteral("generate-api-key"),
 		QStringLiteral("Generate and save a new API key, then print it to standard output."));
 
+	const QCommandLineOption generateObsKey(
+		QStringLiteral("generate-obs-key"),
+		QStringLiteral("Generate and save a new OBS connection key, then print it to standard output."));
+
 	parser.addOption(generateApiKey);
+	parser.addOption(generateObsKey);
 	parser.process(app);
 
 	const QString configDirectory =
 		qEnvironmentVariable("RELAY_CONFIG_DIR", QCoreApplication::applicationDirPath());
+	if (parser.isSet(generateApiKey) && parser.isSet(generateObsKey)) {
+		QTextStream(stderr) << "Choose only one key to regenerate" << Qt::endl;
+		return 1;
+	}
+
 	QString key;
 	QString error;
 	bool generated = false;
@@ -38,6 +48,25 @@ int main(int argc, char **argv) {
 	}
 
 	if (parser.isSet(generateApiKey)) {
+		return 0;
+	}
+
+	if (!API_Endpoint::prepareAccessKey(configDirectory, parser.isSet(generateObsKey), key, error, generated,
+					    QStringLiteral("obs-key"))) {
+		QTextStream(stderr) << "Failed to prepare OBS connection key: " << error << Qt::endl;
+		return 1;
+	}
+
+	if (generated) {
+		if (parser.isSet(generateObsKey)) {
+			QTextStream(stdout) << key << Qt::endl;
+		} else {
+			QTextStream(stdout)
+				<< "OBS connection key saved to " << configDirectory << "/obs-key" << Qt::endl;
+		}
+	}
+
+	if (parser.isSet(generateObsKey)) {
 		return 0;
 	}
 

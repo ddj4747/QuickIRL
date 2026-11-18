@@ -5,6 +5,7 @@
 
 struct RelayConfig {
 	uint16_t apiPort{8080};
+	uint16_t obsControlPort{8081};
 	uint16_t srtlaPort{5000};
 	uint16_t srtPort{8890};
 	uint16_t rtspPort{8554};

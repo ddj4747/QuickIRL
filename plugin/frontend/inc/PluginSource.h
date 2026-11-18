@@ -8,6 +8,7 @@
 #include <SRT_FrameReceiver.h>
 #include <StreamHandler.h>
 #include <PortForwardUtils.h>
+#include <ConnectionHandler.h>
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -29,6 +30,7 @@ public:
 	static PluginSource *fromSource(obs_source_t *source);
 	static const char *id();
 	static void prepareForShutdown();
+	static void refreshConnections();
 	static std::vector<std::pair<std::string, uint64_t>> getBitrates();
 	static std::vector<std::string> sourceNames();
 
@@ -76,9 +78,8 @@ private:
 	void stopReceiver();
 	void startFrameReceiver();
 	void stopFrameReceiver();
-	void destroyPortForwarder();
+	void destroyConnectionHandler();
 	void destroyStreamHandler();
-	void onPortForwardFinished(const PortForwarder *portForwarder, bool success);
 	void startStreamHandler();
 	void prepareInstanceForShutdown();
 
@@ -87,35 +88,24 @@ private:
 	void onStreamUnavailable(const QString &streamId);
 	void onStreamStopped(const QString &streamId);
 	void onStreamError(const QString &streamId, const QString &error);
+	void setConnectionError(const QString &error);
+	void clearGeneratedStreamUrl();
 	void updateProperties() const;
 	NO_DISCARD QString larixLink() const;
 	NO_DISCARD QString irlProLink() const;
 	NO_DISCARD QString moblinLink() const;
 	NO_DISCARD QString connectionLink(const QString &scheme) const;
 
-	struct ForwardingConfig {
-		uint16_t port;
-		PortForwarder::Protocol protocol;
-	};
-
 	static constexpr uint16_t c_srtPort = 8890;
-	static constexpr uint16_t c_srtlaPort = 5000;
-	static constexpr uint16_t c_rtmpPort = 1935;
-	static constexpr uint16_t c_rtspPort = 8554;
-	static constexpr uint16_t c_rtspRtpPort = 8000;
-	static constexpr uint16_t c_rtspRtcpPort = 8001;
-	static constexpr uint16_t c_webrtcHttpPort = 8889;
-	static constexpr uint16_t c_webrtcIcePort = 8189;
-	static constexpr uint16_t c_moqHttpPort = 8892;
-	static constexpr uint16_t c_moqQuicPort = 8893;
 	static constexpr int c_larixSrtLatencyMs = 2000;
 	static constexpr const char *c_qrNamePrefix = "pluginSourceQr";
 
-	NO_DISCARD std::vector<ForwardingConfig> forwardingConfigs();
 	static void deleteOnOwningThread(QObject *object);
 	void copySettingToClipboard(const char *key) const;
 	static bool onCopyStreamIdClicked(obs_properties_t *props, obs_property_t *property, void *data);
 	static bool onCopyStreamUrlClicked(obs_properties_t *props, obs_property_t *property, void *data);
+	static bool onOpenConnectionSettingsClicked(obs_properties_t *props, obs_property_t *property, void *data);
+	static bool onRetryConnectionClicked(obs_properties_t *props, obs_property_t *property, void *data);
 	static bool updatePullProperties(void *data, obs_properties_t *props, obs_property_t *property,
 					 obs_data_t *settings);
 	static void attachAppQrCodes(const QString &larixLink, const QString &moblinLink, const QString &irlProLink,
@@ -130,13 +120,14 @@ private:
 	bool m_running{false};
 	std::string m_streamId;
 	std::string m_streamUrl;
+	QString m_connectionError;
+	mutable std::mutex m_connectionErrorMutex;
 	StreamProtocol m_protocol{};
 
-	std::vector<PortForwarder *> m_portForwarders;
+	ConnectionHandler *m_connectionHandler{nullptr};
 	SRT_FrameReceiver *m_frameReceiver{nullptr};
 	mutable std::mutex m_frameReceiverMutex;
 	StreamHandler *m_streamHandler{nullptr};
-	uint8_t m_pendingPortForwards{0};
 
 	std::map<AVCodecID, std::vector<DecoderInfo>> m_decoderInfos;
 	std::map<AVCodecID, const AVCodec *> m_selectedCodecs;
